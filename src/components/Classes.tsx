@@ -2,6 +2,10 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useToast } from "@/hooks/use-toast";
 import { Plus, Users, Clock, BookOpen } from "lucide-react";
 
 const classData = [
@@ -21,6 +25,109 @@ const classData = [
 
 export function Classes() {
   const [selectedClass, setSelectedClass] = useState<number | null>(null);
+
+  // Attendance prototype state
+  const { toast } = useToast();
+  const [attendance, setAttendance] = useState<{ id: string; name: string; time: string; status: "Present" | "Absent" }[]>([]);
+  const [scanId, setScanId] = useState("");
+  const [zapierUrl, setZapierUrl] = useState("");
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const getNameFromId = (id: string) => `Student ${id.slice(-3).padStart(3, "0")}`;
+
+  const handleScan = () => {
+    if (!scanId.trim()) {
+      toast({
+        title: "Scan required",
+        description: "Enter or scan an RFID/card ID.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const id = scanId.trim();
+    setAttendance((prev) => {
+      const exists = prev.find((r) => r.id === id);
+      const time = new Date().toLocaleTimeString();
+      if (exists) {
+        return prev.map((r) => (r.id === id ? { ...r, time, status: "Present" } : r));
+      }
+      return [{ id, name: getNameFromId(id), time, status: "Present" }, ...prev];
+    });
+    setScanId("");
+    toast({
+      title: "Scan recorded",
+      description: `Marked ${getNameFromId(id)} present.`,
+    });
+  };
+
+  const toggleStatus = (id: string) => {
+    setAttendance((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, status: r.status === "Present" ? "Absent" : "Present" } : r))
+    );
+  };
+
+  const clearAttendance = () => setAttendance([]);
+
+  const exportCSV = () => {
+    const header = ["Class", "Student ID", "Name", "Time", "Status"];
+    const grade = selectedClass ?? "";
+    const rows = attendance.map((r) => [grade, r.id, r.name, r.time, r.status]);
+    const csv = [header, ...rows]
+      .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `attendance_grade_${grade}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const syncToZapier = async () => {
+    if (!zapierUrl) {
+      toast({
+        title: "Webhook required",
+        description: "Enter your Zapier webhook URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (attendance.length === 0) {
+      toast({
+        title: "No records",
+        description: "Scan at least one ID before syncing.",
+      });
+      return;
+    }
+    try {
+      setIsSyncing(true);
+      await fetch(zapierUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        mode: "no-cors",
+        body: JSON.stringify({
+          timestamp: new Date().toISOString(),
+          class_grade: selectedClass,
+          records: attendance,
+          source: window.location.origin,
+        }),
+      });
+      toast({
+        title: "Request sent",
+        description: "Check your Zap's history to confirm Google Sheets received the data.",
+      });
+    } catch (error) {
+      console.error("Error triggering webhook:", error);
+      toast({
+        title: "Error",
+        description: "Failed to trigger the Zapier webhook. Please check the URL and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -107,6 +214,82 @@ export function Classes() {
                 ))}
               </div>
             </div>
+
+            <section aria-labelledby="attendance-heading" className="space-y-4">
+              <h4 id="attendance-heading" className="font-semibold">RFID Attendance (Prototype)</h4>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="zapierUrl">Zapier Webhook URL (for Google Sheets)</Label>
+                  <Input
+                    id="zapierUrl"
+                    placeholder="https://hooks.zapier.com/hooks/catch/..."
+                    value={zapierUrl}
+                    onChange={(e) => setZapierUrl(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">Optional: add your webhook to send attendance to Google Sheets.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="scanId">Simulate RFID/Card ID</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="scanId"
+                      placeholder="e.g. 1234567890"
+                      value={scanId}
+                      onChange={(e) => setScanId(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleScan()
+                      }}
+                    />
+                    <Button type="button" className="gradient-primary text-white" onClick={handleScan}>Scan</Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Type or scan a card ID and press Enter.</p>
+                </div>
+              </div>
+
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Student ID</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {attendance.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-muted-foreground">No scans yet.</TableCell>
+                      </TableRow>
+                    ) : (
+                      attendance.map((r) => (
+                        <TableRow key={r.id}>
+                          <TableCell>{r.id}</TableCell>
+                          <TableCell>{r.name}</TableCell>
+                          <TableCell>{r.time}</TableCell>
+                          <TableCell>
+                            <Badge variant={r.status === "Present" ? "default" : "secondary"}>{r.status}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button variant="outline" size="sm" onClick={() => toggleStatus(r.id)}>Toggle</Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" className="gradient-primary text-white" onClick={syncToZapier} disabled={isSyncing}>
+                  {isSyncing ? "Syncing..." : "Sync to Google Sheets"}
+                </Button>
+                <Button type="button" variant="outline" onClick={exportCSV}>Export CSV</Button>
+                <Button type="button" variant="outline" onClick={clearAttendance}>Clear</Button>
+              </div>
+            </section>
 
             <div className="flex space-x-3">
               <Button className="gradient-primary hover:shadow-hover transition-bounce text-white">
